@@ -6,16 +6,23 @@ import * as net from 'net';
 import * as fs from 'fs';
 import * as path from 'path';
 import { URL } from 'url';
+import {
+	replaceEnvVars,
+	stripNginxHeaders,
+	joinPaths,
+	extractPathnameAndQuery,
+	getUserIdFromReq,
+	findRouteByPathWithRoutes,
+	__internals as helpersInternals,
+	Route,
+	RouteMatch,
+	PathAndQuery
+} from './helpers';
 
-export interface Route {
-  path: string;
-  upstream: string;
-  PermittedUsers?: string[];
-  PermittedMethods?: string[];
-  _prefix?: string; // computed field for prefix matching
-}
+export { replaceEnvVars, stripNginxHeaders, joinPaths, extractPathnameAndQuery, getUserIdFromReq, findRouteByPathWithRoutes } from './helpers';
+export type { Route, RouteMatch, PathAndQuery } from './helpers';
 
-export interface Config {
+interface Config {
   Routes: Record<string, Route>;
   AllUsers: string[];
 }
@@ -23,16 +30,6 @@ export interface Config {
 interface LogEntry {
   ts: string;
   [key: string]: any;
-}
-
-export interface RouteMatch {
-  name: string;
-  route: Route;
-}
-
-export interface PathAndQuery {
-  pathname: string;
-  search: string;
 }
 
 // Load environment variables from .env file if it exists
@@ -69,27 +66,6 @@ function appendLog(file: string, obj: Omit<LogEntry, 'ts'>): void {
   });
 }
 
-// Function to replace environment variables in strings
-export function replaceEnvVars(obj: any): any {
-  if (typeof obj === 'string') {
-    // Replace ${VAR} and $VAR patterns
-    return obj.replace(/\$\{([^}]+)\}/g, (match: string, varName: string) => {
-      return process.env[varName] || match;
-    }).replace(/\$([A-Z_][A-Z0-9_]*)/g, (match: string, varName: string) => {
-      return process.env[varName] || match;
-    });
-  } else if (Array.isArray(obj)) {
-    return obj.map(replaceEnvVars);
-  } else if (obj && typeof obj === 'object') {
-    const result: Record<string, any> = {};
-    for (const [key, value] of Object.entries(obj)) {
-      result[key] = replaceEnvVars(value);
-    }
-    return result;
-  }
-  return obj;
-}
-
 let config: Config;
 try {
   const configText: string = fs.readFileSync(CONFIG_PATH, 'utf8');
@@ -119,7 +95,6 @@ for (const [name, r] of Object.entries(ROUTES)) {
   // ensure trailing slash for prefix-match clarity
   if (!r.path.endsWith('/')) r._prefix = r.path + '/';
   else r._prefix = r.path;
-  // no modification to upstream here
   // warn about unknown users
   const missing: string[] = (r.PermittedUsers || []).filter(u => !ALL_USERS.has(String(u)));
   if (missing.length) {
@@ -127,97 +102,15 @@ for (const [name, r] of Object.entries(ROUTES)) {
   }
 }
 
-// headers from nginx to remove before forwarding
-const REMOVE_HEADERS: Set<string> = new Set([
-  'x-forwarded-for', 'x-forwarded-host', 'x-forwarded-proto',
-  'via', 'x-real-ip', 'x-nginx-proxy', 'x-nginx', 'forwarded'
-]);
-
-export function stripNginxHeaders(headers: Record<string, any>): void {
-  for (const h of Object.keys(headers)) {
-    if (REMOVE_HEADERS.has(h.toLowerCase())) delete headers[h];
-  }
-}
-
-// join two path segments safely
-export function joinPaths(basePath: string, suffix: string): string {
-  if (!basePath) basePath = '/';
-  if (!basePath.endsWith('/')) basePath = basePath + '/';
-  if (!suffix) suffix = '';
-  if (suffix.startsWith('/')) suffix = suffix.slice(1);
-  let combined = (basePath + suffix).replace(/\/+$/g, match => match.length > 1 ? '/' : match); // collapse trailing multiple slashes to one
-  combined = combined.replace(/([^:])\/{2,}/g, (_m, p1) => p1 + '/'); // collapse multiple slashes except after protocol colon
-  if (!combined.startsWith('/')) combined = '/' + combined;
-  return combined;
-}
-
-// find best (longest) route match by request pathname
 function findRouteByPath(pathname: string): RouteMatch | null {
-  let best: RouteMatch | null = null;
-  let bestLen = -1;
-  for (const [name, r] of Object.entries(ROUTES)) {
-    if (!r.path) continue;
-    // two prefix forms: exact path or prefix with trailing slash
-    const prefix = r._prefix || (r.path.endsWith('/') ? r.path : r.path + '/');
-    if (pathname === r.path || pathname.startsWith(prefix)) {
-      if (r.path.length > bestLen) {
-        best = { name, route: r };
-        bestLen = r.path.length;
-      }
-    }
-  }
-  return best;
-}
-
-// pure helper for testing route matching with provided routes
-export function findRouteByPathWithRoutes(routes: Record<string, Route>, pathname: string): RouteMatch | null {
-  let best: RouteMatch | null = null;
-  let bestLen = -1;
-  for (const [name, r] of Object.entries(routes)) {
-    if (!r.path) continue;
-    const prefix = r._prefix || (r.path.endsWith('/') ? r.path : r.path + '/');
-    if (pathname === r.path || pathname.startsWith(prefix)) {
-      if (r.path.length > bestLen) {
-        best = { name, route: r };
-        bestLen = r.path.length;
-      }
-    }
-  }
-  return best;
-}
-
-export function extractPathnameAndQuery(reqUrl: string, headers: http.IncomingHttpHeaders): PathAndQuery {
-  try {
-    if (/^https?:\/\//i.test(reqUrl)) {
-      const u = new URL(reqUrl);
-      return { pathname: u.pathname, search: u.search };
-    } else {
-      // origin-form or absolute path: may include query
-      const [p, q] = reqUrl.split('?', 2);
-      return { pathname: p || '/', search: q ? '?' + q : '' };
-    }
-  } catch (e) {
-    // fallback
-    const [p, q] = reqUrl.split('?', 2);
-    return { pathname: p || '/', search: q ? '?' + q : '' };
-  }
-}
-
-export function getUserIdFromReq(req: http.IncomingMessage): string | null {
-  const fromHeader = req.headers['x-user-id'] || req.headers['x_user_id'];
-  if (fromHeader) return String(fromHeader).trim();
-  const auth = req.headers['authorization'] || req.headers['Authorization'];
-  if (auth && typeof auth === 'string' && auth.toLowerCase().startsWith('bearer ')) {
-    return auth.slice(7).trim();
-  }
-  return null;
+  return findRouteByPathWithRoutes(ROUTES, pathname);
 }
 
 export const server = http.createServer((req: http.IncomingMessage, res: http.ServerResponse) => {
   (async (): Promise<void> => {
     const clientIp: string | undefined = req.socket.remoteAddress;
     const userId: string | null = getUserIdFromReq(req);
-    const { pathname, search }: PathAndQuery = extractPathnameAndQuery(req.url || '', req.headers);
+    const { pathname, search }: PathAndQuery = extractPathnameAndQuery(req.url || '', req.headers as any);
 
     const match: RouteMatch | null = findRouteByPath(pathname);
     if (!match) {
@@ -250,22 +143,18 @@ export const server = http.createServer((req: http.IncomingMessage, res: http.Se
       return;
     }
 
-    // Build destination URL: route.upstream + suffix path + original query
     try {
       if (!match.route.upstream) throw new Error('upstream_not_configured');
       const upstream = new URL(match.route.upstream);
-      // calculate suffix path after route.path
       let suffix = '/';
       if (pathname === match.route.path) suffix = '/';
       else if (pathname.startsWith(match.route._prefix!)) suffix = pathname.slice(match.route.path.length);
       else if (pathname.startsWith(match.route.path)) suffix = pathname.slice(match.route.path.length);
-      // ensure suffix starts with '/'
       if (!suffix.startsWith('/')) suffix = '/' + suffix;
       upstream.pathname = joinPaths(upstream.pathname, suffix);
       upstream.search = search || '';
       const destUrl = upstream;
 
-      // prepare options
       const options: http.RequestOptions = {
         protocol: destUrl.protocol,
         hostname: destUrl.hostname,
@@ -275,26 +164,22 @@ export const server = http.createServer((req: http.IncomingMessage, res: http.Se
         headers: { ...req.headers }
       };
 
-      // strip nginx-added headers and hop-by-hop
       stripNginxHeaders(options.headers as Record<string, any>);
       delete (options.headers as any)['proxy-connection'];
       delete (options.headers as any)['connection'];
-      // set Host to upstream host
       (options.headers as any)['host'] = destUrl.host;
 
       const client = destUrl.protocol === 'https:' ? https : http;
       const upstreamReq = client.request(options, (upstreamRes: http.IncomingMessage) => {
-        // forward status and headers (strip hop-by-hop and nginx headers)
-        const respHeaders = { ...upstreamRes.headers };
+        const respHeaders = { ...upstreamRes.headers } as Record<string, any>;
         for (const h of Object.keys(respHeaders)) {
-          if (REMOVE_HEADERS.has(h.toLowerCase()) || 
-              h.toLowerCase() === 'connection' || 
-              h.toLowerCase() === 'transfer-encoding') {
+          const hl = h.toLowerCase();
+          if (helpersInternals.REMOVE_HEADERS.has(hl) || hl === 'connection' || hl === 'transfer-encoding') {
             delete respHeaders[h];
           }
         }
         res.writeHead(upstreamRes.statusCode || 500, respHeaders);
-        upstreamRes.pipe(res, { end: true });
+        (upstreamRes as any).pipe(res, { end: true });
       });
 
       upstreamReq.on('error', (err: Error) => {
@@ -303,8 +188,7 @@ export const server = http.createServer((req: http.IncomingMessage, res: http.Se
         res.end('Bad Gateway');
       });
 
-      // pipe request body
-      req.pipe(upstreamReq, { end: true });
+      (req as any).pipe(upstreamReq, { end: true });
     } catch (e) {
       appendLog(ERROR_LOG, { level: 'error', msg: 'prepare_forward_failed', error: (e as Error).message, route: match.name, userId, clientIp });
       res.writeHead(500, { 'Content-Type': 'text/plain' });
@@ -313,20 +197,16 @@ export const server = http.createServer((req: http.IncomingMessage, res: http.Se
   })();
 });
 
-// Keep existing CONNECT handling (tunneling) — unchanged semantics but you can
-// restrict by mapping CONNECT target host to a route if you like.
 server.on('connect', (req: http.IncomingMessage, clientSocket: net.Socket, head: Buffer) => {
   const clientIp: string | undefined = clientSocket.remoteAddress;
-  // Extract userId if present in headers of CONNECT (some clients may not send)
   const h = req.headers || {};
   const userId: string | null = (h['x-user-id'] || h['x_user_id'] || 
     (h['authorization'] && typeof h['authorization'] === 'string' && 
-     h['authorization'].toLowerCase().startsWith('bearer ') ? 
-     h['authorization'].slice(7).trim() : null)) as string | null;
+     (h['authorization'] as string).toLowerCase().startsWith('bearer ') ? 
+     (h['authorization'] as string).slice(7).trim() : null)) as string | null;
 
   const [targetHost, targetPort] = (req.url || '').split(':');
 
-  // We allow CONNECT only if any route upstream hostname matches targetHost
   let matched: RouteMatch | null = null;
   for (const [name, r] of Object.entries(ROUTES)) {
     try {
@@ -335,7 +215,7 @@ server.on('connect', (req: http.IncomingMessage, clientSocket: net.Socket, head:
         matched = { name, route: r }; 
         break; 
       }
-    } catch (e) {}
+    } catch {}
   }
 
   if (!matched) {
@@ -360,7 +240,6 @@ server.on('connect', (req: http.IncomingMessage, clientSocket: net.Socket, head:
     return;
   }
 
-  // allow CONNECT only if route permitted methods includes CONNECT
   const allowedMethods: Set<string> = new Set((matched.route.PermittedMethods || []).map(m => m.toUpperCase()));
   if (!allowedMethods.has('CONNECT')) {
     appendLog(ATTEMPT_LOG, { action: 'denied', reason: 'connect_not_allowed', clientIp, connectHost: req.url, route: matched.name, userId });
@@ -398,5 +277,5 @@ if (process.env.NODE_ENV !== 'test') {
 }
 
 export const __internals = {
-  REMOVE_HEADERS,
+  ...helpersInternals,
 };

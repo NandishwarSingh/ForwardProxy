@@ -1,4 +1,4 @@
-import { extractPathnameAndQuery, joinPaths, stripNginxHeaders, findRouteByPathWithRoutes, type Route } from '../proxy';
+import { extractPathnameAndQuery, joinPaths, stripNginxHeaders, findRouteByPathWithRoutes, type Route } from '../helpers';
 
 describe('extractPathnameAndQuery', () => {
 	it('parses absolute URL', () => {
