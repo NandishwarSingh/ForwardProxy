@@ -1,0 +1,26 @@
+{
+    "Routes": {
+      "JSONPlaceholder": {
+        "path": "${JSONPLACEHOLDER_PATH}",
+        "upstream": "${JSONPLACEHOLDER_UPSTREAM}",
+        "PermittedMethods": ["GET", "POST", "PUT", "DELETE"],
+        "PermittedUsers": ["${USER_1_ID}", "${USER_2_ID}"]
+      },
+      "HTTPBin": {
+        "path": "${HTTPBIN_PATH}",
+        "upstream": "${HTTPBIN_UPSTREAM}",
+        "PermittedMethods": ["GET", "POST", "PUT", "DELETE"],
+        "PermittedUsers": ["${USER_1_ID}"]
+      },
+      "CatFacts": {
+        "path": "${CATFACTS_PATH}",
+        "upstream": "${CATFACTS_UPSTREAM}",
+        "PermittedMethods": ["GET"],
+        "PermittedUsers": ["${USER_1_ID}", "${USER_2_ID}"]
+      }
+    },
+    "AllUsers": [
+      "${USER_1_ID}",
+      "${USER_2_ID}"
+    ]
+}
