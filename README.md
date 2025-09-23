@@ -212,24 +212,24 @@ Forward Proxy/
 
 ### Testing
 
-Test the proxy with the included public API routes:
+- Install dev dependencies (already in `package.json`):
+  ```bash
+  npm install
+  ```
 
-```bash
-# Start the proxy
-node proxy.js
+- Run the unit tests:
+  ```bash
+  npm test
+  ```
 
-# Test JSONPlaceholder
-curl -H "X-User-ID: 11111111-1111-1111-1111-111111111111" \
-     http://localhost:3128/jsonplaceholder/posts/1
+- Watch mode:
+  ```bash
+  npm run test:watch
+  ```
 
-# Test HTTPBin
-curl -H "X-User-ID: 11111111-1111-1111-1111-111111111111" \
-     http://localhost:3128/httpbin/ip
-
-# Test authorization (should fail)
-curl -H "X-User-ID: 22222222-2222-2222-2222-222222222222" \
-     http://localhost:3128/httpbin/ip
-```
+Notes:
+- Tests run with `NODE_ENV=test`. The proxy server is guarded to not listen during tests.
+- Helper APIs available for tests: `extractPathnameAndQuery`, `joinPaths`, `stripNginxHeaders`, `findRouteByPathWithRoutes`.
 
 ## License
 

@@ -7,7 +7,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { URL } from 'url';
 
-interface Route {
+export interface Route {
   path: string;
   upstream: string;
   PermittedUsers?: string[];
@@ -15,7 +15,7 @@ interface Route {
   _prefix?: string; // computed field for prefix matching
 }
 
-interface Config {
+export interface Config {
   Routes: Record<string, Route>;
   AllUsers: string[];
 }
@@ -25,12 +25,12 @@ interface LogEntry {
   [key: string]: any;
 }
 
-interface RouteMatch {
+export interface RouteMatch {
   name: string;
   route: Route;
 }
 
-interface PathAndQuery {
+export interface PathAndQuery {
   pathname: string;
   search: string;
 }
@@ -70,7 +70,7 @@ function appendLog(file: string, obj: Omit<LogEntry, 'ts'>): void {
 }
 
 // Function to replace environment variables in strings
-function replaceEnvVars(obj: any): any {
+export function replaceEnvVars(obj: any): any {
   if (typeof obj === 'string') {
     // Replace ${VAR} and $VAR patterns
     return obj.replace(/\$\{([^}]+)\}/g, (match: string, varName: string) => {
@@ -133,19 +133,21 @@ const REMOVE_HEADERS: Set<string> = new Set([
   'via', 'x-real-ip', 'x-nginx-proxy', 'x-nginx', 'forwarded'
 ]);
 
-function stripNginxHeaders(headers: http.IncomingHttpHeaders): void {
+export function stripNginxHeaders(headers: Record<string, any>): void {
   for (const h of Object.keys(headers)) {
     if (REMOVE_HEADERS.has(h.toLowerCase())) delete headers[h];
   }
 }
 
 // join two path segments safely
-function joinPaths(basePath: string, suffix: string): string {
+export function joinPaths(basePath: string, suffix: string): string {
   if (!basePath) basePath = '/';
   if (!basePath.endsWith('/')) basePath = basePath + '/';
   if (!suffix) suffix = '';
   if (suffix.startsWith('/')) suffix = suffix.slice(1);
-  const combined = '/' + (basePath + suffix).replace(/\/+/g, '/');
+  let combined = (basePath + suffix).replace(/\/+$/g, match => match.length > 1 ? '/' : match); // collapse trailing multiple slashes to one
+  combined = combined.replace(/([^:])\/{2,}/g, (_m, p1) => p1 + '/'); // collapse multiple slashes except after protocol colon
+  if (!combined.startsWith('/')) combined = '/' + combined;
   return combined;
 }
 
@@ -167,7 +169,24 @@ function findRouteByPath(pathname: string): RouteMatch | null {
   return best;
 }
 
-function extractPathnameAndQuery(reqUrl: string, headers: http.IncomingHttpHeaders): PathAndQuery {
+// pure helper for testing route matching with provided routes
+export function findRouteByPathWithRoutes(routes: Record<string, Route>, pathname: string): RouteMatch | null {
+  let best: RouteMatch | null = null;
+  let bestLen = -1;
+  for (const [name, r] of Object.entries(routes)) {
+    if (!r.path) continue;
+    const prefix = r._prefix || (r.path.endsWith('/') ? r.path : r.path + '/');
+    if (pathname === r.path || pathname.startsWith(prefix)) {
+      if (r.path.length > bestLen) {
+        best = { name, route: r };
+        bestLen = r.path.length;
+      }
+    }
+  }
+  return best;
+}
+
+export function extractPathnameAndQuery(reqUrl: string, headers: http.IncomingHttpHeaders): PathAndQuery {
   try {
     if (/^https?:\/\//i.test(reqUrl)) {
       const u = new URL(reqUrl);
@@ -184,7 +203,7 @@ function extractPathnameAndQuery(reqUrl: string, headers: http.IncomingHttpHeade
   }
 }
 
-function getUserIdFromReq(req: http.IncomingMessage): string | null {
+export function getUserIdFromReq(req: http.IncomingMessage): string | null {
   const fromHeader = req.headers['x-user-id'] || req.headers['x_user_id'];
   if (fromHeader) return String(fromHeader).trim();
   const auth = req.headers['authorization'] || req.headers['Authorization'];
@@ -194,7 +213,7 @@ function getUserIdFromReq(req: http.IncomingMessage): string | null {
   return null;
 }
 
-const server = http.createServer((req: http.IncomingMessage, res: http.ServerResponse) => {
+export const server = http.createServer((req: http.IncomingMessage, res: http.ServerResponse) => {
   (async (): Promise<void> => {
     const clientIp: string | undefined = req.socket.remoteAddress;
     const userId: string | null = getUserIdFromReq(req);
@@ -204,27 +223,31 @@ const server = http.createServer((req: http.IncomingMessage, res: http.ServerRes
     if (!match) {
       appendLog(ATTEMPT_LOG, { action: 'denied', reason: 'no_route', clientIp, method: req.method, url: req.url, userId });
       res.writeHead(403, { 'Content-Type': 'text/plain' });
-      return res.end('Forbidden: no matching route for path');
+      res.end('Forbidden: no matching route for path');
+      return;
     }
 
     if (!userId || !ALL_USERS.has(userId)) {
       appendLog(ATTEMPT_LOG, { action: 'denied', reason: !userId ? 'missing_user' : 'unknown_user', clientIp, method: req.method, url: req.url, route: match.name, userId });
       res.writeHead(401, { 'Content-Type': 'text/plain' });
-      return res.end('Unauthorized: missing or unknown user');
+      res.end('Unauthorized: missing or unknown user');
+      return;
     }
 
     const permittedUsers: Set<string> = new Set((match.route.PermittedUsers || []).map(String));
     if (!permittedUsers.has(userId)) {
       appendLog(ATTEMPT_LOG, { action: 'denied', reason: 'user_not_permitted_for_route', clientIp, method: req.method, url: req.url, route: match.name, userId });
       res.writeHead(403, { 'Content-Type': 'text/plain' });
-      return res.end('Forbidden: user not permitted for this route');
+      res.end('Forbidden: user not permitted for this route');
+      return;
     }
 
     const allowedMethods: Set<string> = new Set((match.route.PermittedMethods || []).map(m => m.toUpperCase()));
     if (!allowedMethods.has((req.method || '').toUpperCase())) {
       appendLog(ATTEMPT_LOG, { action: 'denied', reason: 'method_not_allowed', clientIp, method: req.method, url: req.url, route: match.name, userId });
       res.writeHead(405, { 'Content-Type': 'text/plain' });
-      return res.end('Method Not Allowed for this route');
+      res.end('Method Not Allowed for this route');
+      return;
     }
 
     // Build destination URL: route.upstream + suffix path + original query
@@ -253,7 +276,7 @@ const server = http.createServer((req: http.IncomingMessage, res: http.ServerRes
       };
 
       // strip nginx-added headers and hop-by-hop
-      stripNginxHeaders(options.headers!);
+      stripNginxHeaders(options.headers as Record<string, any>);
       delete (options.headers as any)['proxy-connection'];
       delete (options.headers as any)['connection'];
       // set Host to upstream host
@@ -367,7 +390,13 @@ server.on('clientError', (err: Error, socket: net.Socket) => {
   if (socket.writable) socket.end('HTTP/1.1 400 Bad Request\r\n\r\n');
 });
 
-server.listen(PORT, () => {
-  console.log(`Path-based proxy listening on ${PORT}`);
-  appendLog(ERROR_LOG, { level: 'info', msg: 'proxy_started', port: PORT });
-});
+if (process.env.NODE_ENV !== 'test') {
+  server.listen(PORT, () => {
+    console.log(`Path-based proxy listening on ${PORT}`);
+    appendLog(ERROR_LOG, { level: 'info', msg: 'proxy_started', port: PORT });
+  });
+}
+
+export const __internals = {
+  REMOVE_HEADERS,
+};
