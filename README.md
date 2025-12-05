@@ -233,4 +233,4 @@ Notes:
 
 ## License
 
-This project is Propritary
+This project is FOSS
